@@ -7,7 +7,9 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'; // CHANGE THIS
 const DATA_FILE = path.join(__dirname, 'data.json');
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = __dirname;   // saari files ek hi folder me (public folder nahi)
+// sirf ye files bahar dikhengi (server.js / data.json kabhi nahi)
+const ALLOWED = new Set(['/index.html', '/admin.html', '/style.css', '/common.js']);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'application/javascript',
@@ -134,8 +136,8 @@ const server = http.createServer(async (req, res) => {
   // ---- Static ----
   let p = url.pathname === '/' ? '/index.html' : url.pathname;
   if (p === '/admin') p = '/admin.html';
-  const file = path.normalize(path.join(PUBLIC_DIR, p));
-  if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end('Forbidden'); }
+  if (!ALLOWED.has(p)) { res.writeHead(404); return res.end('Not found'); }
+  const file = path.join(PUBLIC_DIR, p);
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
