@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin - VideoHub</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="/"><span class="logo-mark">▶</span> VideoHub <small>Admin</small></a>
+  <button id="logout" class="btn ghost" style="display:none">Logout</button>
+</header>
+
+<main class="admin">
+  <section id="loginCard" class="card">
+    <h2>Admin Login</h2>
+    <input id="pw" type="password" placeholder="Password">
+    <button id="loginBtn" class="btn">Login</button>
+    <p class="msg" id="loginMsg"></p>
+  </section>
+
+  <section id="panel" style="display:none">
+    <div class="card">
+      <h2>Naya video / short add karo</h2>
+      <div class="seg" id="seg">
+        <button type="button" data-type="video" class="on">▶ Video</button>
+        <button type="button" data-type="short">⚡ Short</button>
+      </div>
+      <input id="link" type="url" placeholder="Video link (YouTube / Vimeo / Dailymotion / .mp4 link)">
+      <input id="title" type="text" placeholder="Title (optional)">
+      <button id="addBtn" class="btn">Add</button>
+      <p class="msg" id="addMsg"></p>
+    </div>
+
+    <div class="card">
+      <h2>Saari videos</h2>
+      <div id="adminList"></div>
+    </div>
+  </section>
+</main>
+
+<script src="/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let password = sessionStorage.getItem('vh_pw') || '';
+
+function headers() {
+  return { 'Content-Type': 'application/json', 'X-Admin-Password': password };
+}
+
+async function tryLogin(pw) {
+  const r = await fetch('/api/login', { method: 'POST', headers: { 'X-Admin-Password': pw } });
+  return r.ok;
+}
+
+function showPanel(on) {
+  $('loginCard').style.display = on ? 'none' : '';
+  $('panel').style.display = on ? '' : 'none';
+  $('logout').style.display = on ? '' : 'none';
+  if (on) refresh();
+}
+
+async function refresh() {
+  const list = await (await fetch('/api/videos')).json();
+  const box = $('adminList');
+  if (!list.length) { box.innerHTML = '<div class="empty">Abhi koi video nahi.</div>'; return; }
+  box.innerHTML = '';
+  list.forEach(v => {
+    const row = document.createElement('div');
+    row.className = 'arow';
+    row.innerHTML = '<div class="ainfo"><div class="t">' + escapeHtml(v.title) +
+      (isShortVideo(v) ? '<span class="badge">⚡ SHORT</span>' : '') +
+      '</div><div class="d">' + escapeHtml(v.url) + '</div></div>';
+    const isS = isShortVideo(v);
+    const mv = document.createElement('button');
+    mv.className = 'btn ghost';
+    mv.textContent = isS ? '→ Videos me bhejo' : '→ Shorts me bhejo';
+    mv.onclick = async () => {
+      await fetch('/api/videos/' + v.id, { method: 'PATCH', headers: headers(), body: JSON.stringify({ type: isS ? 'video' : 'short' }) });
+      refresh();
+    };
+    row.appendChild(mv);
+    const del = document.createElement('button');
+    del.className = 'btn danger'; del.textContent = 'Delete';
+    del.onclick = async () => {
+      if (!confirm('Delete karna hai?')) return;
+      await fetch('/api/videos/' + v.id, { method: 'DELETE', headers: headers() });
+      refresh();
+    };
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+$('loginBtn').onclick = async () => {
+  const pw = $('pw').value;
+  if (await tryLogin(pw)) {
+    password = pw; sessionStorage.setItem('vh_pw', pw);
+    $('loginMsg').textContent = '';
+    showPanel(true);
+  } else {
+    $('loginMsg').textContent = 'Galat password';
+  }
+};
+$('pw').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginBtn').click(); });
+
+$('addBtn').onclick = async () => {
+  const link = $('link').value.trim();
+  const title = $('title').value.trim();
+  const msg = $('addMsg');
+  const r = await fetch('/api/videos', { method: 'POST', headers: headers(), body: JSON.stringify({ url: link, title, type: curType }) });
+  if (r.ok) {
+    msg.textContent = (curType === 'short' ? 'Short' : 'Video') + ' add ho gaya ✔'; msg.className = 'msg ok';
+    $('link').value = ''; $('title').value = '';
+    refresh();
+  } else {
+    const e = await r.json().catch(() => ({}));
+    msg.textContent = e.error || 'Error'; msg.className = 'msg';
+  }
+};
+
+// Video / Short chunne ka toggle
+let curType = 'video';
+function setType(t) {
+  curType = t;
+  document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.type === t));
+}
+document.querySelectorAll('#seg button').forEach(b => b.onclick = () => setType(b.dataset.type));
+// YouTube /shorts/ link paste karo to apne aap Short select ho jata hai
+$('link').addEventListener('input', () => { if (/youtube\.com\/shorts\//i.test($('link').value)) setType('short'); });
+
+$('logout').onclick = () => { sessionStorage.removeItem('vh_pw'); password = ''; showPanel(false); };
+
+(async () => { if (password && await tryLogin(password)) showPanel(true); })();
+</script>
+</body>
+</html>

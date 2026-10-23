@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoHub</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="#" id="logo"><span class="logo-mark">▶</span> VideoHub</a>
+  <nav class="tabs" id="tabs">
+    <a href="#" data-tab="videos" class="on">▶ Videos</a>
+    <a href="#shorts" data-tab="shorts">⚡ Shorts</a>
+  </nav>
+  <div class="search-wrap" id="searchWrap">
+    <svg class="s-ico" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <input id="search" type="text" autocomplete="off" placeholder="Video search karo...">
+    <button id="clearBtn" class="s-clear" type="button" aria-label="Clear">✕</button>
+  </div>
+</header>
+
+<!-- HOME: videos / shorts grid + YouTube results -->
+<main id="home" class="home">
+  <div class="res-info" id="resInfo"></div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="homeEmpty" style="display:none"></div>
+  <section class="ytbox" id="ytBox"></section>
+</main>
+
+<!-- WATCH: normal video -->
+<main id="watch" class="layout" style="display:none">
+  <section class="player-col">
+    <div class="player-box" id="playerBox"></div>
+    <h1 id="nowTitle" class="now-title"></h1>
+    <div id="nowMeta" class="now-meta"></div>
+  </section>
+  <aside class="list-col">
+    <div class="list-head">Aur videos</div>
+    <div class="list" id="list"></div>
+  </aside>
+</main>
+
+<!-- SHORT: vertical player -->
+<main id="shortView" class="sview" style="display:none">
+  <div class="sstage">
+    <div class="splayer" id="splayer"></div>
+    <div class="s-title" id="sTitle"></div>
+    <div class="s-meta" id="sMeta"></div>
+  </div>
+  <div class="snav">
+    <button id="sPrev" class="nbtn" type="button" aria-label="Pichla short">↑</button>
+    <button id="sNext" class="nbtn" type="button" aria-label="Agla short">↓</button>
+  </div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+let videos = [];
+let tab = 'videos';
+let shortNav = { prev: null, next: null };
+const ytMem = new Map();                 // id -> YouTube result (player kholne ke liye)
+const ytMemo = new Map();                // "kind:query" -> results
+let ytList = { video: [], short: [] };   // abhi dikh rahe YouTube results
+const $ = id => document.getElementById(id);
+const isShort = isShortVideo;
+const listOf = t => videos.filter(v => t === 'shorts' ? isShort(v) : !isShort(v));
+
+function hue(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+
+function thumbHtml(v) {
+  const info = parseVideo(v.url);
+  if (info.thumb) return '<img loading="lazy" src="' + escapeHtml(info.thumb) + '" alt="">';
+  const h = hue(v.title);
+  return '<div class="ph" style="background:linear-gradient(135deg,hsl(' + h + ',55%,28%),hsl(' + ((h + 50) % 360) + ',60%,18%))"><span>▶</span></div>';
+}
+
+function dateStr(v) { return new Date(v.addedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
+
+// search match ko highlight karo
+function hl(title, q) {
+  if (!q) return escapeHtml(title);
+  const i = title.toLowerCase().indexOf(q);
+  if (i < 0) return escapeHtml(title);
+  return escapeHtml(title.slice(0, i)) + '<mark>' + escapeHtml(title.slice(i, i + q.length)) + '</mark>' + escapeHtml(title.slice(i + q.length));
+}
+
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === t));
+  $('search').placeholder = t === 'shorts' ? 'Shorts search karo...' : 'Video search karo...';
+}
+
+function hideAll() {
+  ['home', 'watch', 'shortView'].forEach(id => $(id).style.display = 'none');
+  $('playerBox').innerHTML = '';   // chalta video band
+  $('splayer').innerHTML = '';
+}
+
+function makePlayer(v, forShort) {
+  const info = parseVideo(v.url);
+  let el;
+  if (info.type === 'video') {
+    el = document.createElement('video');
+    el.src = info.embed; el.controls = true; el.autoplay = true; el.playsInline = true;
+    if (forShort) el.loop = true;
+  } else {
+    el = document.createElement('iframe');
+    el.src = info.embed + (forShort && info.yt ? '&loop=1&playlist=' + info.yt : '');
+    el.allow = 'autoplay; fullscreen; picture-in-picture; encrypted-media';
+    el.allowFullscreen = true;
+    el.referrerPolicy = 'strict-origin-when-cross-origin';
+  }
+  return el;
+}
+
+/* ---------- CARD (video ya short) ---------- */
+function cardEl(v, isS, q, href, i, sub) {
+  const a = document.createElement('a');
+  a.className = 'card-v' + (isS ? ' card-s' : '');
+  a.style.animationDelay = Math.min(i * 55, 600) + 'ms';
+  a.href = href;
+  if (isS) {
+    a.innerHTML =
+      '<div class="thumb-s">' + thumbHtml(v) + '<span class="sbadge">⚡ Short</span></div>' +
+      '<div class="ct s-ct">' + hl(v.title, q) + '</div><div class="cd">' + escapeHtml(sub) + '</div>';
+  } else {
+    const who = (v.channel || v.title).trim();
+    a.innerHTML =
+      '<div class="thumb-lg">' + thumbHtml(v) + '<span class="playbadge">▶</span></div>' +
+      '<div class="cinfo"><div class="avatar" style="background:hsl(' + hue(who) + ',55%,40%)">' +
+      escapeHtml(who.charAt(0).toUpperCase() || 'V') + '</div>' +
+      '<div class="cmeta"><div class="ct">' + hl(v.title, q) + '</div>' +
+      '<div class="cd">' + escapeHtml(sub) + '</div></div></div>';
+  }
+  return a;
+}
+
+/* ---------- GRID (apni videos / shorts) ---------- */
+function renderGrid() {
+  const raw = $('search').value.trim();
+  const q = raw.toLowerCase();
+  const isS = tab === 'shorts';
+  $('searchWrap').classList.toggle('has-text', !!raw);
+  const shown = listOf(tab).filter(v => v.title.toLowerCase().includes(q));
+  const grid = $('grid');
+  grid.className = 'grid' + (isS ? ' shorts' : '');
+  grid.innerHTML = '';
+
+  $('resInfo').textContent = raw && shown.length ? shown.length + ' result' + (shown.length > 1 ? 's' : '') + ' VideoHub me, "' + raw + '"' : '';
+
+  const empty = $('homeEmpty');
+  empty.style.display = shown.length ? 'none' : '';
+  if (!shown.length) {
+    empty.innerHTML = raw
+      ? '<div class="no-ico">🔍</div>"' + escapeHtml(raw) + '" VideoHub me nahi mili.<br><small>Neeche YouTube ke results dekho.</small>'
+      : (isS ? '<div class="no-ico">⚡</div>Abhi koi short nahi hai.' : 'Abhi koi video nahi hai.');
+    empty.classList.remove('pop'); void empty.offsetWidth; empty.classList.add('pop');
+  }
+
+  shown.forEach((v, i) => grid.appendChild(cardEl(v, isS, q, (isS ? '#short/' : '#watch/') + v.id, i,
+    isS ? dateStr(v) : 'VideoHub · ' + dateStr(v))));
+
+  scheduleYt(raw);
+}
+
+/* ---------- YOUTUBE SE SEARCH ---------- */
+let ytTimer, ytReq = 0;
+
+function ytMsg(text) { $('ytBox').innerHTML = '<div class="yt-head"><span class="yt-logo">▶</span> YouTube se results</div><div class="yt-msg">' + text + '</div>'; }
+
+function renderYt(items, kind, raw) {
+  const isS = kind === 'short';
+  ytList[kind] = items;
+  items.forEach(it => ytMem.set(it.id, it));
+  if (!items.length) return ytMsg('YouTube pe bhi "' + escapeHtml(raw) + '" ke liye kuch nahi mila.');
+  const box = $('ytBox');
+  box.innerHTML = '<div class="yt-head"><span class="yt-logo">▶</span> YouTube se results</div>' +
+    '<div class="grid' + (isS ? ' shorts' : '') + '" id="ytGrid"></div>';
+  const g = $('ytGrid');
+  items.forEach((v, i) => g.appendChild(cardEl(v, isS, '', (isS ? '#yts/' : '#yt/') + v.id, i, v.channel)));
+}
+
+function scheduleYt(raw) {
+  clearTimeout(ytTimer);
+  ytReq++;                                   // purani request ka jawab ignore hoga
+  if (raw.length < 2) { $('ytBox').innerHTML = ''; return; }
+  const kind = tab === 'shorts' ? 'short' : 'video';
+  const key = kind + ':' + raw.toLowerCase();
+  if (ytMemo.has(key)) return renderYt(ytMemo.get(key), kind, raw);
+  $('ytBox').innerHTML = '<div class="yt-head"><span class="yt-logo">▶</span> YouTube se results <span class="yt-load">dhundh raha hu…</span></div>';
+  const my = ytReq;
+  ytTimer = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/yt-search?kind=' + kind + '&q=' + encodeURIComponent(raw));
+      const j = await r.json();
+      if (my !== ytReq) return;
+      if (!r.ok) return ytMsg(j.error === 'limit' ? 'Aaj ke YouTube searches khatam ho gaye, kal try karo.' : 'YouTube search abhi available nahi hai.');
+      ytMemo.set(key, j);
+      renderYt(j, kind, raw);
+    } catch { if (my === ytReq) ytMsg('YouTube search abhi available nahi hai.'); }
+  }, 450);
+}
+
+/* ---------- NORMAL VIDEO ---------- */
+function renderSide(side, currentId, prefix) {
+  const list = $('list');
+  list.innerHTML = '';
+  side.filter(v => v.id !== currentId).forEach(v => {
+    const a = document.createElement('a');
+    a.className = 'item';
+    a.href = prefix + v.id;
+    a.innerHTML = '<div class="thumb">' + thumbHtml(v) + '</div>' +
+      '<div class="meta"><div class="t">' + escapeHtml(v.title) + '</div><div class="d">' +
+      escapeHtml(v.channel || dateStr(v)) + '</div></div>';
+    list.appendChild(a);
+  });
+  if (!list.children.length) list.innerHTML = '<div class="empty">Aur koi video nahi.</div>';
+}
+
+function showWatch(v, side, prefix) {
+  hideAll(); setTab('videos');
+  $('watch').style.display = '';
+  $('playerBox').appendChild(makePlayer(v, false));
+  $('nowTitle').textContent = v.title;
+  $('nowMeta').textContent = v.channel ? v.channel + ' · YouTube' : 'Added ' + dateStr(v);
+  document.title = v.title + ' - VideoHub';
+  renderSide(side || listOf('videos'), v.id, prefix || '#watch/');
+  window.scrollTo({ top: 0 });
+}
+
+/* ---------- SHORT ---------- */
+function showShort(v, all, prefix) {
+  hideAll(); setTab('shorts');
+  all = all || listOf('shorts'); prefix = prefix || '#short/';
+  let i = all.findIndex(x => x.id === v.id);
+  if (i < 0) { all = [v]; i = 0; }
+  $('shortView').style.display = '';
+  $('splayer').appendChild(makePlayer(v, true));
+  $('sTitle').textContent = v.title;
+  $('sMeta').textContent = (i + 1) + ' / ' + all.length + ' · ' + (v.channel ? v.channel + ' · YouTube' : dateStr(v));
+  shortNav = { prev: all[i - 1] ? prefix + all[i - 1].id : null, next: all[i + 1] ? prefix + all[i + 1].id : null };
+  $('sPrev').disabled = !shortNav.prev;
+  $('sNext').disabled = !shortNav.next;
+  document.title = v.title + ' - Shorts';
+  window.scrollTo({ top: 0 });
+}
+
+function goShort(href) { if (href) location.hash = href; }
+$('sPrev').onclick = () => goShort(shortNav.prev);
+$('sNext').onclick = () => goShort(shortNav.next);
+document.addEventListener('keydown', e => {
+  if ($('shortView').style.display === 'none') return;
+  if (document.activeElement === $('search')) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); goShort(shortNav.next); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); goShort(shortNav.prev); }
+});
+
+/* ---------- HOME ---------- */
+function showHome(t) {
+  hideAll(); setTab(t);
+  $('home').style.display = '';
+  document.title = t === 'shorts' ? 'Shorts - VideoHub' : 'VideoHub';
+  renderGrid();
+}
+
+function ytItem(id) {
+  return ytMem.get(id) || { id, url: 'https://youtu.be/' + id, title: 'YouTube video', channel: 'YouTube' };
+}
+
+function route() {
+  const h = location.hash;
+  let m;
+  if ((m = h.match(/^#watch\/(\w+)/))) {
+    const v = videos.find(x => x.id === m[1] && !isShort(x));
+    if (v) return showWatch(v);
+  }
+  if ((m = h.match(/^#short\/(\w+)/))) {
+    const v = videos.find(x => x.id === m[1] && isShort(x));
+    if (v) return showShort(v);
+  }
+  if ((m = h.match(/^#yt\/([\w-]{6,})/))) return showWatch(ytItem(m[1]), ytList.video, '#yt/');
+  if ((m = h.match(/^#yts\/([\w-]{6,})/))) return showShort(ytItem(m[1]), ytList.short, '#yts/');
+  showHome(h === '#shorts' ? 'shorts' : 'videos');
+}
+
+/* ---------- SEARCH ---------- */
+let searchTimer;
+$('search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    if (/^#(watch|short|yt|yts)\//.test(location.hash)) location.hash = tab === 'shorts' ? '#shorts' : '';   // search pe grid pe aao
+    else renderGrid();
+  }, 120);
+});
+$('search').addEventListener('keydown', e => { if (e.key === 'Escape') $('clearBtn').click(); });
+$('clearBtn').addEventListener('click', () => {
+  $('search').value = '';
+  $('search').focus();
+  renderGrid();
+});
+// logo / tab pe click: search saaf + dobara draw (same hash pe bhi)
+[$('logo'), ...document.querySelectorAll('#tabs a')].forEach(a =>
+  a.addEventListener('click', () => { $('search').value = ''; setTimeout(route, 0); }));
+
+window.addEventListener('hashchange', route);
+
+(async () => {
+  try { videos = await (await fetch('/api/videos')).json(); } catch { videos = []; }
+  route();
+})();
+</script>
+</body>
+</html>
